@@ -104,6 +104,18 @@ $sticky_navbar = true;
 // max upload file size
 $max_upload_size_bytes = 5000;
 
+// text viewer page size (used as a fallback, the browser measures the viewport)
+$view_text_default_lines = 40;
+
+// maximum bytes read for a single text page
+$view_text_max_page_bytes = 262144;
+
+// total number of text pages kept around the current page (forced to an odd number)
+$view_text_buffer_pages = 3;
+
+// automatically load adjacent pages when scrolling near the edges
+$view_text_auto_extend = true;
+
 // Possible rules are 'OFF', 'AND' or 'OR'
 // OFF => Don't check connection IP, defaults to OFF
 // AND => Connection must be on the whitelist, and not on the blacklist

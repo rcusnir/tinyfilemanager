@@ -3,14 +3,14 @@
 $CONFIG = '{"lang":"en","error_reporting":false,"show_hidden":false,"hide_Cols":false,"calc_folder":false,"theme":"light","hide_empty_folder":true}';
 
 /**
- * H3K - Tiny File Manager V2.6
+ * H3K - Tiny File Manager V2.6.2 - add autoscroll
  * @author CCP Programmers
  * @github https://github.com/prasathmani/tinyfilemanager
  * @link https://tinyfilemanager.github.io
  */
 
 //TFM version
-define('VERSION', '2.6');
+define('VERSION', '2.6.2');
 
 //Application Title
 define('APP_TITLE', 'Tiny File Manager');
@@ -125,6 +125,18 @@ $max_upload_size_bytes = 5000;
 // eg. decrease to 1MB if nginx reports problem 413 entity too large
 $upload_chunk_size_bytes = 200; // chunk size 2,000,000 bytes (~2MB)
 
+// text viewer page size (used as a fallback, the browser measures the viewport)
+$view_text_default_lines = 40;
+
+// maximum bytes read for a single text page
+$view_text_max_page_bytes = 262144;
+
+// total number of text pages kept around the current page (forced to an odd number)
+$view_text_buffer_pages = 3;
+
+// automatically load adjacent pages when scrolling near the edges
+$view_text_auto_extend = true;
+
 // Possible rules are 'OFF', 'AND' or 'OR'
 // OFF => Don't check connection IP, defaults to OFF
 // AND => Connection must be on the whitelist, and not on the blacklist
@@ -176,6 +188,16 @@ define('MAX_UPLOAD_SIZE', $max_upload_size_bytes);
 
 // upload chunk size
 define('UPLOAD_CHUNK_SIZE', $upload_chunk_size_bytes);
+
+// text viewer pagination
+define('FM_VIEW_TEXT_DEFAULT_LINES', max(1, (int) $view_text_default_lines));
+define('FM_VIEW_TEXT_MAX_PAGE_BYTES', max(1024, (int) $view_text_max_page_bytes));
+$view_text_buffer_pages = max(1, (int) $view_text_buffer_pages);
+if ($view_text_buffer_pages % 2 === 0) {
+    $view_text_buffer_pages++;
+}
+define('FM_VIEW_TEXT_BUFFER_PAGES', $view_text_buffer_pages);
+define('FM_VIEW_TEXT_AUTO_EXTEND', (bool) $view_text_auto_extend);
 
 // private key and session name to store to the session
 if (!defined('FM_SESSION_ID')) {
@@ -468,6 +490,58 @@ defined('FM_DATETIME_FORMAT') || define('FM_DATETIME_FORMAT', $datetime_format);
 unset($p, $use_auth, $iconv_input_encoding, $use_highlightjs, $highlightjs_style);
 
 /*************************** ACTIONS ***************************/
+
+// text viewer window (also available for read-only users)
+if (isset($_POST['ajax'], $_POST['token']) && $_POST['ajax'] === 'text'
+    && isset($_POST['type']) && $_POST['type'] === 'textwindow') {
+    if (!verifyToken($_POST['token'])) {
+        header('HTTP/1.0 401 Unauthorized');
+        die('Invalid Token.');
+    }
+    $view_root_path = FM_ROOT_PATH;
+    if (FM_PATH != '') {
+        $view_root_path .= '/' . FM_PATH;
+    }
+    $view_file = isset($_GET['view']) ? $_GET['view'] : (isset($_POST['view']) ? $_POST['view'] : '');
+    $view_file = fm_clean_path($view_file, false);
+    $view_file = str_replace('/', '', $view_file);
+    $view_path = $view_root_path . '/' . $view_file;
+    if ($view_file === '' || !is_file($view_path) || !fm_is_exclude_items($view_file)) {
+        header('HTTP/1.0 404 Not Found');
+        die('File not found.');
+    }
+    $view_ext = strtolower(pathinfo($view_path, PATHINFO_EXTENSION));
+    $view_mime = fm_get_mime_type($view_path);
+    if (!(in_array($view_ext, fm_get_text_exts()) || substr($view_mime, 0, 4) === 'text' || in_array($view_mime, fm_get_text_mimes()))) {
+        header('HTTP/1.0 415 Unsupported Media Type');
+        die('Not a text file.');
+    }
+    $view_lines = isset($_POST['lines']) ? max(1, min(500, (int) $_POST['lines'])) : FM_VIEW_TEXT_DEFAULT_LINES;
+    $view_span = isset($_POST['span']) ? max(0, min(20, (int) $_POST['span'])) : (int) ((FM_VIEW_TEXT_BUFFER_PAGES - 1) / 2);
+    $view_params = array();
+    if (isset($_POST['start']) && $_POST['start'] !== '') {
+        $view_params['start'] = (int) $_POST['start'];
+    }
+    if (isset($_POST['dir']) && $_POST['dir'] !== '') {
+        $view_params['dir'] = $_POST['dir'];
+    }
+    if (isset($_POST['pos']) && $_POST['pos'] !== '') {
+        $view_params['pos'] = $_POST['pos'];
+    }
+    $view_end = isset($_POST['end']) && $_POST['end'] !== '' ? (int) $_POST['end'] : null;
+    $view_line = isset($_POST['line']) && $_POST['line'] !== '' ? max(1, (int) $_POST['line']) : null;
+    $view_start = fm_text_resolve_start($view_path, $view_params, $view_lines, FM_VIEW_TEXT_MAX_PAGE_BYTES);
+    $view_window = fm_text_read_window($view_path, $view_start, $view_lines, $view_span, FM_VIEW_TEXT_MAX_PAGE_BYTES, $view_end, $view_line);
+    if ($view_window === false) {
+        header('HTTP/1.0 500 Internal Server Error');
+        die('Could not read file.');
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    $json_flags = defined('JSON_INVALID_UTF8_SUBSTITUTE') ? JSON_INVALID_UTF8_SUBSTITUTE : 0;
+    echo json_encode($view_window, $json_flags);
+    exit;
+}
 
 // Handle all AJAX Request
 if ((isset($_SESSION[FM_SESSION_ID]['logged'], $auth_users[$_SESSION[FM_SESSION_ID]['logged']]) || !FM_USE_AUTH) && isset($_POST['ajax'], $_POST['token']) && !FM_READONLY) {
@@ -1784,7 +1858,6 @@ if (isset($_GET['view'])) {
         $view_title = 'Video';
     } elseif (in_array($ext, fm_get_text_exts()) || substr($mime_type, 0, 4) == 'text' || in_array($mime_type, fm_get_text_mimes())) {
         $is_text = true;
-        $content = file_get_contents($file_path);
     }
 
 ?>
@@ -1823,12 +1896,11 @@ if (isset($_GET['view'])) {
                 }
                 // Text info
                 if ($is_text) {
-                    $is_utf8 = fm_is_utf8($content);
-                    if (function_exists('iconv')) {
-                        if (!$is_utf8) {
-                            $content = iconv(FM_ICONV_INPUT_ENC, 'UTF-8//IGNORE', $content);
-                        }
+                    $text_sample = @file_get_contents($file_path, false, null, 0, 65536);
+                    if ($text_sample === false) {
+                        $text_sample = '';
                     }
+                    $is_utf8 = fm_is_utf8($text_sample);
                     echo '<li class="list-group-item"><strong>' . lng('Charset') . ':</strong> ' . ($is_utf8 ? 'utf-8' : '8 bit') . '</li>';
                 }
                 ?>
@@ -1906,27 +1978,106 @@ if (isset($_GET['view'])) {
                     // Video content
                     echo '<div class="preview-video"><video src="' . fm_enc($file_url) . '" width="640" height="360" controls preload="metadata"></video></div>';
                 } elseif ($is_text) {
-                    if (FM_USE_HIGHLIGHTJS) {
-                        // highlight
-                        $hljs_classes = array(
-                            'shtml' => 'xml',
-                            'htaccess' => 'apache',
-                            'phtml' => 'php',
-                            'lock' => 'json',
-                            'svg' => 'xml',
-                        );
-                        $hljs_class = isset($hljs_classes[$ext]) ? 'lang-' . $hljs_classes[$ext] : 'lang-' . $ext;
-                        if (empty($ext) || in_array(strtolower($file), fm_get_text_names()) || preg_match('#\.min\.(css|js)$#i', $file)) {
-                            $hljs_class = 'nohighlight';
-                        }
-                        $content = '<pre class="with-hljs"><code class="' . $hljs_class . '">' . fm_enc($content) . '</code></pre>';
-                    } elseif (in_array($ext, array('php', 'php4', 'php5', 'phtml', 'phps'))) {
-                        // php highlight
-                        $content = highlight_string($content, true);
-                    } else {
-                        $content = '<pre>' . fm_enc($content) . '</pre>';
+                    $text_lines = FM_VIEW_TEXT_DEFAULT_LINES;
+                    $text_span = (int) ((FM_VIEW_TEXT_BUFFER_PAGES - 1) / 2);
+                    $text_scroll = 'top';
+                    if (isset($_GET['pos']) && $_GET['pos'] === 'bottom') {
+                        $text_scroll = 'bottom';
+                    } elseif (isset($_GET['start']) || isset($_GET['dir'])) {
+                        $text_scroll = 'page';
                     }
-                    echo $content;
+                    $text_end = isset($_GET['end']) && $_GET['end'] !== '' ? (int) $_GET['end'] : null;
+                    $text_start = fm_text_resolve_start($file_path, $_GET, $text_lines, FM_VIEW_TEXT_MAX_PAGE_BYTES);
+                    $text_window = fm_text_read_window($file_path, $text_start, $text_lines, $text_span, FM_VIEW_TEXT_MAX_PAGE_BYTES, $text_end);
+                    if ($text_window === false) {
+                        echo '<p>' . lng('Error while fetching file') . '</p>';
+                    } else {
+                        $hljs_class = '';
+                        if (FM_USE_HIGHLIGHTJS) {
+                            $hljs_classes = array(
+                                'shtml' => 'xml',
+                                'htaccess' => 'apache',
+                                'phtml' => 'php',
+                                'lock' => 'json',
+                                'svg' => 'xml',
+                            );
+                            $hljs_class = isset($hljs_classes[$ext]) ? 'lang-' . $hljs_classes[$ext] : 'lang-' . $ext;
+                            if (empty($ext) || in_array(strtolower($file), fm_get_text_names()) || preg_match('#\.min\.(css|js)$#i', $file)) {
+                                $hljs_class = 'nohighlight';
+                            }
+                        }
+
+                        $text_pages = $text_window['pages'];
+                        $text_index = isset($text_window['currentIndex']) ? $text_window['currentIndex'] : 0;
+                        $text_current = $text_pages[$text_index];
+                        $line_from = (int) $text_current['lineNumber'];
+                        $line_to = $line_from + max(1, (int) $text_current['lineCount']) - 1;
+                        $position_text = $text_window['size'] === 0 ? lng('Empty file') : sprintf(lng('Lines %s-%s'), $line_from, $line_to);
+                        $view_base = FM_SELF_URL . '?p=' . urlencode(FM_PATH) . '&view=' . urlencode($file);
+                        $cache_id = md5(FM_ROOT_PATH . '|' . FM_PATH . '|' . $file);
+                        $at_top = (int) $text_current['start'] === 0;
+                        $at_bottom = $text_current['end'] >= $text_window['size'];
+                        $prev_start = $text_current['prevStart'];
+                        $next_start = $text_current['nextStart'];
+                        $prev_href = $view_base . '&start=' . (int) $prev_start . '&end=' . (int) $text_current['start'];
+                        $next_href = $view_base . '&start=' . (int) $next_start;
+                        $bottom_href = $view_base . '&pos=bottom';
+
+                        $text_html = '';
+                        foreach ($text_pages as $text_page) {
+                            $text_html .= '<span class="fm-text-page"'
+                                . ' data-start="' . (int) $text_page['start'] . '"'
+                                . ' data-end="' . (int) $text_page['end'] . '"'
+                                . ' data-lines="' . (int) $text_page['lineCount'] . '"'
+                                . ' data-prev="' . ($text_page['prevStart'] === null ? '' : (int) $text_page['prevStart']) . '"'
+                                . ' data-next="' . ($text_page['nextStart'] === null ? '' : (int) $text_page['nextStart']) . '"'
+                                . ' data-line-number="' . (int) $text_page['lineNumber'] . '">'
+                                . fm_enc($text_page['content']) . '</span>';
+                        }
+                        ?>
+                        <div class="fm-text-toolbar">
+                            <span class="fm-text-position" id="fm-text-position"><?php echo fm_enc($position_text); ?></span>
+                            <div class="fm-text-toolbar-controls">
+                                <label class="fm-text-buffer" for="fm-buffer-pages">
+                                    <?php echo lng('Buffer') ?>
+                                    <input type="number" id="fm-buffer-pages" min="1" max="11" step="2" value="<?php echo (int) FM_VIEW_TEXT_BUFFER_PAGES; ?>">
+                                </label>
+                                <label class="fm-text-autoscroll" for="fm-auto-scroll">
+                                    <input type="checkbox" id="fm-auto-scroll">
+                                    <?php echo lng('Auto-scroll') ?>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="fm-text-viewer">
+                            <div class="fm-text-pane" id="fm-text-pane" tabindex="0"
+                                data-file="<?php echo fm_enc($file) ?>"
+                                data-base="<?php echo fm_enc($view_base) ?>"
+                                data-lines="<?php echo (int) $text_lines ?>"
+                                data-span="<?php echo (int) $text_span ?>"
+                                data-buffer="<?php echo (int) FM_VIEW_TEXT_BUFFER_PAGES ?>"
+                                data-current-start="<?php echo (int) $text_current['start'] ?>"
+                                data-size="<?php echo (int) $text_window['size'] ?>"
+                                data-mtime="<?php echo (int) $text_window['mtime'] ?>"
+                                data-inode="<?php echo (int) $text_window['inode'] ?>"
+                                data-device="<?php echo (int) $text_window['device'] ?>"
+                                data-lang="<?php echo fm_enc($hljs_class) ?>"
+                                data-cache-id="<?php echo fm_enc($cache_id) ?>"
+                                data-auto-extend="<?php echo FM_VIEW_TEXT_AUTO_EXTEND ? '1' : '0' ?>"
+                                data-initial-scroll="<?php echo fm_enc($text_scroll) ?>"
+                                data-label-empty="<?php echo fm_enc(lng('Empty file')) ?>"
+                                data-label-lines="<?php echo fm_enc(lng('Lines %s-%s')) ?>"
+                                data-label-error="<?php echo fm_enc(lng('Error loading page')) ?>">
+                                <pre id="fm-text-content"><?php echo $text_html; ?></pre>
+                            </div>
+                            <nav class="fm-text-nav" aria-label="<?php echo fm_enc(lng('Text pages')) ?>">
+                                <a class="btn btn-sm <?php echo $at_top ? 'btn-outline-secondary disabled' : 'btn-outline-primary'; ?>" data-fm-nav="top" href="<?php echo $at_top ? '#' : fm_enc($view_base); ?>"<?php echo $at_top ? ' aria-disabled="true" tabindex="-1"' : ''; ?>><i class="fa fa-angle-double-up"></i> <?php echo lng('Top') ?></a>
+                                <a class="btn btn-sm <?php echo $prev_start === null ? 'btn-outline-secondary disabled' : 'btn-outline-primary'; ?>" data-fm-nav="prev" href="<?php echo $prev_start === null ? '#' : fm_enc($prev_href); ?>"<?php echo $prev_start === null ? ' aria-disabled="true" tabindex="-1"' : ''; ?>><i class="fa fa-angle-up"></i> <?php echo lng('Prev') ?></a>
+                                <a class="btn btn-sm <?php echo $next_start === null ? 'btn-outline-secondary disabled' : 'btn-outline-primary'; ?>" data-fm-nav="next" href="<?php echo $next_start === null ? '#' : fm_enc($next_href); ?>"<?php echo $next_start === null ? ' aria-disabled="true" tabindex="-1"' : ''; ?>><i class="fa fa-angle-down"></i> <?php echo lng('Next') ?></a>
+                                <a class="btn btn-sm <?php echo $at_bottom ? 'btn-outline-secondary disabled' : 'btn-outline-primary'; ?>" data-fm-nav="bottom" href="<?php echo $at_bottom ? '#' : fm_enc($bottom_href); ?>"<?php echo $at_bottom ? ' aria-disabled="true" tabindex="-1"' : ''; ?>><i class="fa fa-angle-double-down"></i> <?php echo lng('Bottom') ?></a>
+                            </nav>
+                        </div>
+                        <?php
+                    }
                 }
                 ?>
             </div>
@@ -3343,6 +3494,385 @@ function fm_get_onlineViewer_exts()
 }
 
 /**
+ * Convert a text chunk to UTF-8 when possible
+ * @param string $content
+ * @return string
+ */
+function fm_text_normalize($content)
+{
+    if (!fm_is_utf8($content) && function_exists('iconv')) {
+        $converted = @iconv(FM_ICONV_INPUT_ENC, 'UTF-8//IGNORE', $content);
+        if ($converted !== false) {
+            return $converted;
+        }
+    }
+    return $content;
+}
+
+/**
+ * Find the byte offset of the first line of a page that ends at $end
+ * @param string $file_path
+ * @param int $end
+ * @param int $lines
+ * @return int|null
+ */
+function fm_text_find_line_start($file_path, $end, $lines, $max_scan = null)
+{
+    $size = @filesize($file_path);
+    if ($size === false) {
+        return null;
+    }
+    $end = max(0, min((int) $end, $size));
+    if ($end <= 0) {
+        return null;
+    }
+    $lines = max(1, (int) $lines);
+    $min_pos = $max_scan === null ? 0 : max(0, $end - max(0, (int) $max_scan));
+    $fh = @fopen($file_path, 'rb');
+    if (!$fh) {
+        return null;
+    }
+    $pos = $end - 1;
+    $found = 0;
+    $chunk_size = 65536;
+    while ($pos > $min_pos) {
+        $read = min($chunk_size, $pos - $min_pos);
+        if ($read < 1) {
+            break;
+        }
+        $pos -= $read;
+        fseek($fh, $pos);
+        $buf = fread($fh, $read);
+        if ($buf === false || $buf === '') {
+            break;
+        }
+        for ($i = strlen($buf) - 1; $i >= 0; $i--) {
+            if ($buf[$i] !== "\n") {
+                continue;
+            }
+            // skip the newline that immediately precedes the current page
+            if ($pos + $i === $end - 1) {
+                continue;
+            }
+            $found++;
+            if ($found >= $lines) {
+                fclose($fh);
+                return $pos + $i + 1;
+            }
+        }
+    }
+    fclose($fh);
+    if ($max_scan === null || $min_pos <= 0) {
+        return 0;
+    }
+    return null;
+}
+
+/**
+ * Find the start offset of the previous page, bounded by the byte limit
+ * @param string $file_path
+ * @param int $cursor
+ * @param int $lines
+ * @param int $max_bytes
+ * @param int $min_start
+ * @return int|null
+ */
+function fm_text_prev_page_start($file_path, $cursor, $lines, $max_bytes, $min_start = 0)
+{
+    $cursor = max(0, (int) $cursor);
+    $min_start = max(0, (int) $min_start);
+    $max_bytes = max(1024, (int) $max_bytes);
+    if ($cursor <= $min_start) {
+        return null;
+    }
+    $line_start = fm_text_find_line_start($file_path, $cursor, max(1, (int) $lines), $max_bytes);
+    if ($line_start !== null) {
+        if ($line_start < $min_start) {
+            $line_start = $min_start;
+        }
+        if ($cursor - $line_start <= $max_bytes) {
+            return $line_start < $cursor ? $line_start : null;
+        }
+    }
+    $window_start = max($min_start, $cursor - $max_bytes);
+    $fh = @fopen($file_path, 'rb');
+    if (!$fh) {
+        return $window_start < $cursor ? $window_start : null;
+    }
+    fseek($fh, $window_start);
+    $chunk = fread($fh, $cursor - $window_start);
+    fclose($fh);
+    if ($chunk === false) {
+        return $window_start < $cursor ? $window_start : null;
+    }
+    $cut = strpos($chunk, "\n");
+    if ($cut !== false) {
+        $start = $window_start + $cut + 1;
+        if ($start < $cursor) {
+            return $start;
+        }
+    }
+    return $window_start < $cursor ? $window_start : null;
+}
+
+/**
+ * Read up to a number of lines from a file
+ * @param string $file_path
+ * @param int $start
+ * @param int $lines
+ * @param int $max_bytes
+ * @param int|null $end_limit
+ * @return array|false
+ */
+function fm_text_read_page($file_path, $start, $lines, $max_bytes, $end_limit = null)
+{
+    $size = @filesize($file_path);
+    if ($size === false) {
+        return false;
+    }
+    $start = max(0, min((int) $start, $size));
+    $lines = max(1, (int) $lines);
+    $max_bytes = max(1024, (int) $max_bytes);
+    $end_limit = ($end_limit === null) ? $size : max($start, min((int) $end_limit, $size));
+    $fh = @fopen($file_path, 'rb');
+    if (!$fh) {
+        return false;
+    }
+    if ($start > 0) {
+        fseek($fh, $start);
+    }
+    $content = '';
+    $newlines = 0;
+    $eof = false;
+    while ($newlines < $lines && strlen($content) < $max_bytes && $start + strlen($content) < $end_limit) {
+        $remaining = $end_limit - ($start + strlen($content));
+        $read_len = min(1048576, $max_bytes - strlen($content), $remaining);
+        if ($read_len < 1) {
+            break;
+        }
+        $chunk = fgets($fh, $read_len + 1);
+        if ($chunk === false) {
+            $eof = true;
+            break;
+        }
+        $content .= $chunk;
+        $newlines += substr_count($chunk, "\n");
+        if ($start + strlen($content) >= $end_limit) {
+            $eof = true;
+            break;
+        }
+    }
+    fclose($fh);
+    if (strlen($content) > $max_bytes) {
+        $cut = strrpos(substr($content, 0, $max_bytes), "\n");
+        if ($cut !== false) {
+            $content = substr($content, 0, $cut + 1);
+        } else {
+            $content = substr($content, 0, $max_bytes);
+        }
+    }
+    $end = $start + strlen($content);
+    if ($end >= $size || $end >= $end_limit) {
+        $eof = true;
+    }
+    $line_count = substr_count($content, "\n");
+    if ($content !== '' && substr($content, -1) !== "\n") {
+        $line_count++;
+    }
+    return array(
+        'start' => $start,
+        'end' => $end,
+        'content' => $content,
+        'lineCount' => $line_count,
+        'prevStart' => $start > 0 ? fm_text_prev_page_start($file_path, $start, $lines, $max_bytes) : null,
+        'nextStart' => (!$eof && $end < $size) ? $end : null,
+    );
+}
+
+/**
+ * Get the 1-based line number at a byte offset
+ * @param string $file_path
+ * @param int $offset
+ * @return int
+ */
+function fm_text_line_number($file_path, $offset)
+{
+    $offset = max(0, (int) $offset);
+    if ($offset <= 0) {
+        return 1;
+    }
+    $fh = @fopen($file_path, 'rb');
+    if (!$fh) {
+        return 1;
+    }
+    $remaining = $offset;
+    $count = 0;
+    $chunk_size = 1048576;
+    while ($remaining > 0) {
+        $read = min($chunk_size, $remaining);
+        $buf = fread($fh, $read);
+        if ($buf === false || $buf === '') {
+            break;
+        }
+        $count += substr_count($buf, "\n");
+        $remaining -= strlen($buf);
+        if (strlen($buf) < $read) {
+            break;
+        }
+    }
+    fclose($fh);
+    return $count + 1;
+}
+
+/**
+ * Get the start offset of the last page
+ * @param string $file_path
+ * @param int $lines
+ * @param int $max_bytes
+ * @return int
+ */
+function fm_text_bottom_start($file_path, $lines, $max_bytes)
+{
+    $size = @filesize($file_path);
+    if ($size === false || $size === 0) {
+        return 0;
+    }
+    $start = fm_text_prev_page_start($file_path, $size, max(1, (int) $lines), $max_bytes);
+    return $start === null ? 0 : $start;
+}
+
+/**
+ * Resolve the requested page start from request parameters
+ * @param string $file_path
+ * @param array $params
+ * @param int $lines
+ * @param int $max_bytes
+ * @return int
+ */
+function fm_text_resolve_start($file_path, $params, $lines, $max_bytes)
+{
+    $size = @filesize($file_path);
+    if ($size === false) {
+        return 0;
+    }
+    if (isset($params['pos']) && $params['pos'] === 'bottom') {
+        return fm_text_bottom_start($file_path, $lines, $max_bytes);
+    }
+    if (isset($params['dir'], $params['start']) && $params['dir'] === 'prev') {
+        $start = fm_text_prev_page_start($file_path, (int) $params['start'], max(1, (int) $lines), $max_bytes);
+        return $start === null ? 0 : $start;
+    }
+    if (isset($params['start'])) {
+        return max(0, min((int) $params['start'], $size));
+    }
+    return 0;
+}
+
+/**
+ * Read a window of text pages around the current page
+ * @param string $file_path
+ * @param int $current_start
+ * @param int $lines
+ * @param int $span
+ * @param int $max_bytes
+ * @param int|null $current_end
+ * @param int|null $line_hint line number of $current_start, used only when $span is 0 to skip the scan from byte 0
+ * @return array|false
+ */
+function fm_text_read_window($file_path, $current_start, $lines, $span, $max_bytes, $current_end = null, $line_hint = null)
+{
+    $stat = @stat($file_path);
+    if ($stat === false) {
+        return false;
+    }
+    $size = (int) $stat['size'];
+    $current_start = max(0, min((int) $current_start, $size));
+    $lines = max(1, (int) $lines);
+    $span = max(0, (int) $span);
+    if ($current_end !== null) {
+        $current_end = (int) $current_end;
+        if ($current_end <= $current_start || $current_end > $size) {
+            $current_end = null;
+        }
+    }
+
+    $current = fm_text_read_page($file_path, $current_start, $lines, $max_bytes, $current_end);
+    if ($current === false) {
+        return false;
+    }
+    if ($current_end !== null) {
+        $current['nextStart'] = $current_end < $size ? $current_end : null;
+    }
+
+    $before = array();
+    $cursor = $current_start;
+    for ($i = 0; $i < $span; $i++) {
+        if ($cursor <= 0) {
+            break;
+        }
+        $prev_start = fm_text_prev_page_start($file_path, $cursor, $lines, $max_bytes);
+        if ($prev_start === null || $prev_start >= $cursor) {
+            break;
+        }
+        $page = fm_text_read_page($file_path, $prev_start, $lines, $max_bytes, $cursor);
+        if ($page === false) {
+            break;
+        }
+        $page['end'] = $cursor;
+        $page['nextStart'] = $cursor;
+        $page['prevStart'] = $prev_start > 0 ? fm_text_prev_page_start($file_path, $prev_start, $lines, $max_bytes) : null;
+        $page['lineCount'] = substr_count($page['content'], "\n");
+        if ($page['content'] !== '' && substr($page['content'], -1) !== "\n") {
+            $page['lineCount']++;
+        }
+        $before[] = $page;
+        $cursor = $prev_start;
+        if ($cursor <= 0) {
+            break;
+        }
+    }
+    $before = array_reverse($before);
+
+    $after = array();
+    $cursor = $current['nextStart'];
+    while ($cursor !== null && count($after) < $span) {
+        $page = fm_text_read_page($file_path, $cursor, $lines, $max_bytes);
+        if ($page === false) {
+            break;
+        }
+        $after[] = $page;
+        if ($page['nextStart'] === null || $page['nextStart'] <= $cursor) {
+            break;
+        }
+        $cursor = $page['nextStart'];
+    }
+
+    $pages = array_merge($before, array($current), $after);
+
+    $line = ($line_hint !== null && $span === 0) ? max(1, (int) $line_hint) : fm_text_line_number($file_path, $pages[0]['start']);
+    foreach ($pages as &$page) {
+        $page['lineNumber'] = $line;
+        $page['content'] = fm_text_normalize($page['content']);
+        $advance = max(0, (int) $page['lineCount']);
+        if ($page['content'] !== '' && substr($page['content'], -1) !== "\n" && $page['end'] < $size) {
+            $advance = max(0, $advance - 1);
+        }
+        $line += $advance;
+    }
+    unset($page);
+
+    return array(
+        'size' => $size,
+        'mtime' => (int) $stat['mtime'],
+        'inode' => (int) $stat['ino'],
+        'device' => (int) $stat['dev'],
+        'currentStart' => $current['start'],
+        'currentIndex' => count($before),
+        'pages' => $pages,
+    );
+}
+
+/**
  * It returns the mime type of a file based on its extension.
  * @param extension The file extension of the file you want to get the mime type for.
  * @return string|string[] The mime type of the file.
@@ -4230,6 +4760,106 @@ function fm_show_header_login()
             code.maxheight,
             pre.maxheight {
                 max-height: 512px
+            }
+
+            .fm-text-toolbar {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+                margin: 0 0 8px;
+            }
+
+            .fm-text-position {
+                font-weight: 600;
+            }
+
+            .fm-text-toolbar-controls {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 12px;
+            }
+
+            .fm-text-autoscroll {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                margin: 0;
+                font-weight: normal;
+                cursor: pointer;
+            }
+
+            .fm-text-buffer {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                margin: 0;
+                font-weight: normal;
+            }
+
+            .fm-text-buffer input {
+                width: 72px;
+                padding: 2px 6px;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+            }
+
+            .fm-text-viewer {
+                display: flex;
+                align-items: stretch;
+                gap: 8px;
+            }
+
+            .fm-text-pane {
+                flex: 1 1 auto;
+                height: 70vh;
+                overflow: auto;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                background: #fff;
+            }
+
+            .fm-text-pane pre {
+                margin: 0;
+                padding: 10px 12px;
+                border: 0;
+                background: transparent;
+                line-height: 20px;
+            }
+
+            .fm-text-page {
+                display: block;
+            }
+
+            .fm-text-nav {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                flex: 0 0 auto;
+                min-width: 104px;
+            }
+
+            .fm-text-nav .btn {
+                white-space: nowrap;
+                text-align: left;
+            }
+
+            @media (max-width: 576px) {
+                .fm-text-viewer {
+                    flex-direction: column;
+                }
+
+                .fm-text-pane {
+                    height: 60vh;
+                }
+
+                .fm-text-nav {
+                    flex-direction: row;
+                    flex-wrap: wrap;
+                    min-width: 0;
+                }
             }
 
             .fa.fa-caret-right {
@@ -5261,6 +5891,871 @@ function fm_show_header_login()
             });
         </script>
 
+        <script>
+            (function() {
+                var pane = document.getElementById('fm-text-pane');
+                var pre = document.getElementById('fm-text-content');
+                if (!pane || !pre) {
+                    return;
+                }
+
+                var label = document.getElementById('fm-text-position');
+                var bufferInput = document.getElementById('fm-buffer-pages');
+                var nav = {};
+                Array.prototype.forEach.call(document.querySelectorAll('[data-fm-nav]'), function(a) {
+                    nav[a.getAttribute('data-fm-nav')] = a;
+                });
+
+                var base = pane.getAttribute('data-base') || window.location.href;
+                var serverLines = parseInt(pane.getAttribute('data-lines'), 10) || 40;
+                var lines = serverLines;
+                var serverBuffer = parseInt(pane.getAttribute('data-buffer'), 10) || 3;
+                if (serverBuffer % 2 === 0) {
+                    serverBuffer++;
+                }
+                var totalBuffer = serverBuffer;
+                var span = Math.floor((totalBuffer - 1) / 2);
+                var currentStart = parseInt(pane.getAttribute('data-current-start'), 10) || 0;
+                var size = parseInt(pane.getAttribute('data-size'), 10) || 0;
+                var mtime = parseInt(pane.getAttribute('data-mtime'), 10) || 0;
+                var lang = pane.getAttribute('data-lang') || '';
+                var autoExtend = pane.getAttribute('data-auto-extend') === '1';
+                var cacheId = pane.getAttribute('data-cache-id') || '';
+                var initialScroll = pane.getAttribute('data-initial-scroll') || 'top';
+                var labelEmpty = pane.getAttribute('data-label-empty') || 'Empty file';
+                var labelLines = pane.getAttribute('data-label-lines') || 'Lines %s-%s';
+                var labelError = pane.getAttribute('data-label-error') || 'Error loading page';
+
+                var autoScrollInput = document.getElementById('fm-auto-scroll');
+                var fileId = (pane.getAttribute('data-device') || '0') + ':' + (pane.getAttribute('data-inode') || '0');
+                var followEnabled = false;
+                var followTimer = null;
+                var followInterval = 1500;
+                var keepTop = 0;
+
+
+                var pages = new Map();
+                var domPages = new Map();
+                var loading = false;
+                var suppressScroll = false;
+                var saveTimer = null;
+                var resizeTimer = null;
+
+                function cacheKey() {
+                    return 'fmText:' + cacheId + ':' + lines;
+                }
+
+                function pageFromEl(el) {
+                    function num(name) {
+                        var value = el.getAttribute(name);
+                        if (value === null || value === '' || typeof value === 'undefined') {
+                            return null;
+                        }
+                        var parsed = parseInt(value, 10);
+                        return isNaN(parsed) ? null : parsed;
+                    }
+                    return {
+                        start: num('data-start'),
+                        end: num('data-end'),
+                        lineCount: num('data-lines') || 0,
+                        prevStart: num('data-prev'),
+                        nextStart: num('data-next'),
+                        lineNumber: num('data-line-number') || 1,
+                        content: el.textContent
+                    };
+                }
+
+                function indexDom() {
+                    pages.clear();
+                    domPages.clear();
+                    Array.prototype.forEach.call(pre.querySelectorAll('.fm-text-page'), function(el) {
+                        var page = pageFromEl(el);
+                        if (page.start === null) {
+                            return;
+                        }
+                        pages.set(page.start, page);
+                        domPages.set(page.start, el);
+                    });
+                }
+
+                function domStarts() {
+                    return Array.from(domPages.keys()).sort(function(a, b) {
+                        return a - b;
+                    });
+                }
+
+                function domPageObjects() {
+                    return domStarts().map(function(start) {
+                        return pages.get(start);
+                    }).filter(function(page) {
+                        return !!page;
+                    });
+                }
+
+                function highlightPage(el) {
+                    if (!lang || lang === 'nohighlight' || lang === 'lang-txt' || lang === 'lang-plaintext' || typeof hljs === 'undefined') {
+                        return;
+                    }
+                    var name = lang.replace(/^lang-/, '');
+                    if (!name || (hljs.getLanguage && !hljs.getLanguage(name))) {
+                        return;
+                    }
+                    try {
+                        el.classList.add(lang);
+                        hljs.highlightElement(el);
+                    } catch (e) {}
+                }
+
+                function makePage(page) {
+                    var el = document.createElement('span');
+                    el.className = 'fm-text-page';
+                    el.setAttribute('data-start', page.start);
+                    el.setAttribute('data-end', page.end);
+                    el.setAttribute('data-lines', page.lineCount);
+                    el.setAttribute('data-prev', page.prevStart === null ? '' : page.prevStart);
+                    el.setAttribute('data-next', page.nextStart === null ? '' : page.nextStart);
+                    el.setAttribute('data-line-number', page.lineNumber);
+                    el.textContent = page.content;
+                    return el;
+                }
+
+                function addPage(page, position) {
+                    pages.set(page.start, page);
+                    if (domPages.has(page.start)) {
+                        return;
+                    }
+                    var el = makePage(page);
+                    if (position === 'prepend') {
+                        pre.insertBefore(el, pre.firstChild);
+                    } else {
+                        pre.appendChild(el);
+                    }
+                    domPages.set(page.start, el);
+                    highlightPage(el);
+                }
+
+                function measure() {
+                    var style = window.getComputedStyle(pre);
+                    var lineHeight = parseFloat(style.lineHeight);
+                    if (!lineHeight || isNaN(lineHeight)) {
+                        lineHeight = 20;
+                    }
+                    var padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+                    var available = Math.max(lineHeight, pane.clientHeight - padding);
+                    return {
+                        lines: Math.max(1, Math.floor(available / lineHeight)),
+                        lineHeight: lineHeight
+                    };
+                }
+
+                function scrollToPage(start) {
+                    var el = domPages.get(start);
+                    if (!el) {
+                        return;
+                    }
+                    var delta = el.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+                    pane.scrollTop += delta;
+                }
+
+                function setScroll(mode) {
+                    suppressScroll = true;
+                    if (mode === 'bottom') {
+                        pane.scrollTop = pane.scrollHeight;
+                    } else if (mode === 'page') {
+                        scrollToPage(currentStart);
+                    } else if (mode === 'keep') {
+                        pane.scrollTop = keepTop;
+                    } else {
+                        pane.scrollTop = 0;
+                    }
+                    window.setTimeout(function() {
+                        suppressScroll = false;
+                        updateUi();
+                    }, 0);
+                }
+
+                function currentPageAtViewportTop() {
+                    var starts = domStarts();
+                    if (!starts.length) {
+                        return null;
+                    }
+                    if (pane.scrollTop <= 0) {
+                        return starts[0];
+                    }
+                    if (pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2) {
+                        return starts[starts.length - 1];
+                    }
+                    var probe = pane.getBoundingClientRect().top + pane.clientHeight / 2;
+                    var nearest = null;
+                    var nearestDistance = Infinity;
+                    for (var i = 0; i < starts.length; i++) {
+                        var start = starts[i];
+                        var rect = domPages.get(start).getBoundingClientRect();
+                        if (rect.top <= probe && rect.bottom > probe) {
+                            return start;
+                        }
+                        var distance = Math.abs(rect.top - probe);
+                        if (distance < nearestDistance) {
+                            nearestDistance = distance;
+                            nearest = start;
+                        }
+                    }
+                    return nearest;
+                }
+
+                function currentPage() {
+                    var page = pages.get(currentStart);
+                    if (!page) {
+                        var start = currentPageAtViewportTop();
+                        if (start !== null) {
+                            currentStart = start;
+                            page = pages.get(start);
+                        }
+                    }
+                    return page;
+                }
+
+                function setNav(name, enabled, href) {
+                    var el = nav[name];
+                    if (!el) {
+                        return;
+                    }
+                    if (enabled) {
+                        el.classList.remove('disabled', 'btn-outline-secondary');
+                        el.classList.add('btn-outline-primary');
+                        el.removeAttribute('aria-disabled');
+                        el.removeAttribute('tabindex');
+                        el.setAttribute('href', href);
+                    } else {
+                        el.classList.add('disabled', 'btn-outline-secondary');
+                        el.classList.remove('btn-outline-primary');
+                        el.setAttribute('aria-disabled', 'true');
+                        el.setAttribute('tabindex', '-1');
+                        el.setAttribute('href', '#');
+                    }
+                }
+
+                function formatLines(from, to) {
+                    var values = [from, to];
+                    var index = 0;
+                    return labelLines.replace(/%s/g, function() {
+                        return index < values.length ? values[index++] : '';
+                    });
+                }
+
+                function updateUi() {
+                    var page = currentPage();
+                    if (label) {
+                        label.classList.remove('text-danger');
+                        label.removeAttribute('title');
+                        if (size === 0) {
+                            label.textContent = labelEmpty;
+                        } else if (page) {
+                            var from = page.lineNumber || 1;
+                            var to = from + Math.max(1, page.lineCount || 1) - 1;
+                            label.textContent = formatLines(from, to);
+                        }
+                    }
+                    setNav('top', !(page && page.start === 0), base);
+                    setNav('prev', !!(page && page.prevStart !== null), page && page.prevStart !== null ? base + '&start=' + page.prevStart : '#');
+                    setNav('next', !!(page && page.nextStart !== null), page && page.nextStart !== null ? base + '&start=' + page.nextStart : '#');
+                    setNav('bottom', !(page && page.end >= size), base + '&pos=bottom');
+                }
+
+                function saveCache() {
+                    if (!cacheId) {
+                        return;
+                    }
+                    var list = domPageObjects();
+                    if (!list.length) {
+                        return;
+                    }
+                    try {
+                        var index = 0;
+                        for (var i = 0; i < list.length; i++) {
+                            if (list[i].start === currentStart) {
+                                index = i;
+                                break;
+                            }
+                        }
+                        var slice = list.slice(Math.max(0, index - 2), index + 3);
+                        window.sessionStorage.setItem(cacheKey(), JSON.stringify({
+                            v: 1,
+                            size: size,
+                            mtime: mtime,
+                            lines: lines,
+                            currentStart: currentStart,
+                            bufferTotal: totalBuffer,
+                            pages: slice
+                        }));
+                    } catch (e) {}
+                }
+
+                function scheduleSave() {
+                    window.clearTimeout(saveTimer);
+                    saveTimer = window.setTimeout(saveCache, 250);
+                }
+
+                function pruneDom() {
+                    var maxPages = 80;
+                    if (domPages.size <= maxPages) {
+                        return;
+                    }
+                    var selection = window.getSelection ? window.getSelection() : null;
+                    if (selection && !selection.isCollapsed) {
+                        return;
+                    }
+                    if (followEnabled) {
+                        pruneTopOnly(maxPages);
+                        return;
+                    }
+                    var starts = domStarts();
+                    while (domPages.size > maxPages && starts.length > 3) {
+                        var currentIndex = starts.indexOf(currentStart);
+                        if (currentIndex < 0) {
+                            currentIndex = 0;
+                        }
+                        var below = starts.length - 1 - currentIndex;
+                        var removeTop = currentIndex > below;
+                        var start = removeTop ? starts[0] : starts[starts.length - 1];
+                        if (start === currentStart) {
+                            start = removeTop ? starts[starts.length - 1] : starts[0];
+                            removeTop = !removeTop;
+                        }
+                        var el = domPages.get(start);
+                        if (!el) {
+                            starts.shift();
+                            continue;
+                        }
+                        var height = el.getBoundingClientRect().height;
+                        if (removeTop) {
+                            pane.scrollTop -= height;
+                        }
+                        el.parentNode.removeChild(el);
+                        domPages.delete(start);
+                        pages.delete(start);
+                        starts = domStarts();
+                    }
+                }
+
+                function fileIdOf(obj) {
+                    return (obj.device || 0) + ':' + (obj.inode || 0);
+                }
+
+                function lastDomPage() {
+                    var starts = domStarts();
+                    return starts.length ? pages.get(starts[starts.length - 1]) : null;
+                }
+
+                function isPinned() {
+                    return pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 4;
+                }
+
+                function scrollToFollowBottom() {
+                    suppressScroll = true;
+                    pane.scrollTop = pane.scrollHeight;
+                    window.setTimeout(function() {
+                        suppressScroll = false;
+                        updateUi();
+                    }, 0);
+                }
+
+                function removeDomPage(start) {
+                    var el = domPages.get(start);
+                    if (el && el.parentNode) {
+                        el.parentNode.removeChild(el);
+                    }
+                    domPages.delete(start);
+                    pages.delete(start);
+                }
+
+                // Where polling continues from: after the last retained page when it ends with a newline,
+                // otherwise the start of that page so the partial line is re-read in full.
+                function followBase(last) {
+                    if (/\n$/.test(last.content)) {
+                        return { start: last.end, line: last.lineNumber + last.lineCount, partial: false };
+                    }
+                    return { start: last.start, line: last.lineNumber, partial: true };
+                }
+
+                // While Auto-scroll is on, keep the DOM bounded. Drop pages far above the viewport first;
+                // if the viewport is near the top, drop pages far below it instead. Dropped bottom pages are
+                // re-fetched by polling (or by a bottom reload), so the view stays in sync with the file.
+                function pruneTopOnly(maxPages) {
+                    var excess = domPages.size - maxPages;
+                    while (excess > 0) {
+                        var starts = domStarts();
+                        var idx = starts.indexOf(currentStart);
+                        if (idx < 0) {
+                            idx = 0;
+                        }
+                        if (idx - 2 > 0) {
+                            var top = starts[0];
+                            var h = domPages.get(top).getBoundingClientRect().height;
+                            pane.scrollTop -= h;
+                            removeDomPage(top);
+                        } else if (starts.length - 1 - idx - 2 > 0) {
+                            removeDomPage(starts[starts.length - 1]);
+                        } else {
+                            break;
+                        }
+                        excess--;
+                    }
+                }
+
+                function scheduleFollow() {
+                    window.clearTimeout(followTimer);
+                    followTimer = null;
+                    if (followEnabled) {
+                        followTimer = window.setTimeout(pollFollow, followInterval);
+                    }
+                }
+
+                function reloadFollow() {
+                    var pinned = isPinned();
+                    keepTop = pane.scrollTop;
+                    request(null, span, 'bottom', pinned ? 'bottom' : 'keep');
+                }
+
+                function handleFollowData(data, base) {
+                    var incoming = data.pages || [];
+                    var newSize = parseInt(data.size, 10) || 0;
+                    var newMtime = parseInt(data.mtime, 10) || 0;
+                    var id = fileIdOf(data);
+                    if (id === fileId && newSize === size && newMtime === mtime) {
+                        return;
+                    }
+                    var page = incoming[0];
+                    if (id !== fileId || newSize < size ||
+                        (newSize === size && newMtime !== mtime) ||
+                        incoming.length !== 1 || !page || page.start !== base.start || page.end !== newSize) {
+                        reloadFollow();
+                        return;
+                    }
+                    var pinned = isPinned();
+                    if (base.partial) {
+                        var lastEl = lastDomPage();
+                        if (lastEl && lastEl.start === page.start) {
+                            removeDomPage(lastEl.start);
+                        }
+                    }
+                    addPage(page, 'append');
+                    size = newSize;
+                    mtime = newMtime;
+                    fileId = id;
+                    pane.setAttribute('data-size', size);
+                    pane.setAttribute('data-mtime', mtime);
+                    if (pinned) {
+                        currentStart = page.start;
+                    }
+                    pruneDom();
+                    if (pinned) {
+                        scrollToFollowBottom();
+                    }
+                    updateUi();
+                    saveCache();
+                }
+
+                function pollFollow() {
+                    followTimer = null;
+                    if (!followEnabled) {
+                        return;
+                    }
+                    if (document.hidden || loading) {
+                        scheduleFollow();
+                        return;
+                    }
+                    var last = lastDomPage();
+                    if (!last) {
+                        reloadFollow();
+                        scheduleFollow();
+                        return;
+                    }
+                    var base = followBase(last);
+                    loading = true;
+                    fetchPages({
+                        start: base.start,
+                        span: 0,
+                        line: base.line
+                    }, function(error, data) {
+                        loading = false;
+                        if (!followEnabled) {
+                            return;
+                        }
+                        if (error) {
+                            if (label) {
+                                label.textContent = labelError;
+                                label.title = error.message || String(error);
+                                label.classList.add('text-danger');
+                            }
+                        } else {
+                            handleFollowData(data, base);
+                        }
+                        scheduleFollow();
+                    });
+                }
+
+                function startFollow() {
+                    if (!followEnabled) {
+                        return;
+                    }
+                    if (loading) {
+                        window.setTimeout(startFollow, 200);
+                        return;
+                    }
+                    request(null, span, 'bottom', 'bottom');
+                }
+
+                function renderWindow(data, scrollMode) {
+                    pages.clear();
+                    domPages.clear();
+                    pre.innerHTML = '';
+                    (data.pages || []).forEach(function(page) {
+                        pages.set(page.start, page);
+                        var el = makePage(page);
+                        pre.appendChild(el);
+                        domPages.set(page.start, el);
+                        highlightPage(el);
+                    });
+                    size = parseInt(data.size, 10) || 0;
+                    mtime = parseInt(data.mtime, 10) || 0;
+                    fileId = fileIdOf(data);
+                    var start = parseInt(data.currentStart, 10);
+                    currentStart = isNaN(start) ? ((data.pages && data.pages[0]) ? data.pages[0].start : 0) : start;
+                    pane.setAttribute('data-size', size);
+                    pane.setAttribute('data-mtime', mtime);
+                    setScroll(scrollMode);
+                    updateUi();
+                    saveCache();
+                    if (followEnabled) {
+                        scheduleFollow();
+                    }
+                }
+
+                function fetchPages(params, callback) {
+                    var body = 'ajax=text&type=textwindow&token=' + encodeURIComponent(window.csrf || '') +
+                        '&lines=' + encodeURIComponent(lines) +
+                        '&span=' + encodeURIComponent(params.span);
+                    if (params.pos) {
+                        body += '&pos=' + encodeURIComponent(params.pos);
+                    } else if (params.start !== null && typeof params.start !== 'undefined') {
+                        body += '&start=' + encodeURIComponent(params.start);
+                    }
+                    if (params.dir) {
+                        body += '&dir=' + encodeURIComponent(params.dir);
+                    }
+                    if (params.end !== null && typeof params.end !== 'undefined') {
+                        body += '&end=' + encodeURIComponent(params.end);
+                    }
+                    if (params.line !== null && typeof params.line !== 'undefined') {
+                        body += '&line=' + encodeURIComponent(params.line);
+                    }
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('POST', base, true);
+                    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                    xhr.onreadystatechange = function() {
+                        if (xhr.readyState !== 4) {
+                            return;
+                        }
+                        if (xhr.status !== 200) {
+                            callback(new Error('HTTP ' + xhr.status));
+                            return;
+                        }
+                        var data;
+                        try {
+                            data = JSON.parse(xhr.responseText);
+                        } catch (e) {
+                            callback(e);
+                            return;
+                        }
+                        if (!data || !data.pages) {
+                            callback(new Error('Invalid response'));
+                            return;
+                        }
+                        callback(null, data);
+                    };
+                    xhr.send(body);
+                }
+
+                function request(start, spanCount, pos, scrollMode, end) {
+                    if (loading) {
+                        return;
+                    }
+                    loading = true;
+                    fetchPages({
+                        start: start,
+                        span: spanCount,
+                        pos: pos,
+                        end: end
+                    }, function(error, data) {
+                        loading = false;
+                        if (error) {
+                            if (label) {
+                                label.textContent = labelError;
+                                label.title = error.message || String(error);
+                                label.classList.add('text-danger');
+                            }
+                            scheduleFollow();
+                            return;
+                        }
+                        renderWindow(data, scrollMode);
+                    });
+                }
+
+                function requestCurrent(spanCount, scrollMode) {
+                    if (followEnabled) {
+                        request(null, spanCount, 'bottom', 'bottom');
+                        return;
+                    }
+                    var page = currentPage();
+                    if (pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2) {
+                        request(null, spanCount, 'bottom', 'bottom');
+                    } else {
+                        request(page ? page.start : currentStart, spanCount, null, scrollMode || 'page');
+                    }
+                }
+
+                function requestInitial(spanCount) {
+                    if (initialScroll === 'bottom') {
+                        request(null, spanCount, 'bottom', 'bottom');
+                    } else {
+                        request(currentStart, spanCount, null, initialScroll === 'page' ? 'page' : 'top');
+                    }
+                }
+
+                function navigate(name) {
+                    if (loading) {
+                        return;
+                    }
+                    if (name === 'top') {
+                        request(0, span, null, 'top');
+                        return;
+                    }
+                    if (name === 'bottom') {
+                        request(null, span, 'bottom', 'bottom');
+                        return;
+                    }
+                    var page = currentPage();
+                    if (!page) {
+                        return;
+                    }
+                    var target = name === 'prev' ? page.prevStart : page.nextStart;
+                    if (target === null || typeof target === 'undefined') {
+                        return;
+                    }
+                    request(target, span, null, 'page', name === 'prev' ? page.start : null);
+                }
+
+                function extend(dir) {
+                    if (!autoExtend || loading) {
+                        return;
+                    }
+                    var starts = domStarts();
+                    if (!starts.length) {
+                        return;
+                    }
+                    var edgeStart = dir === 'next' ? starts[starts.length - 1] : starts[0];
+                    var edge = pages.get(edgeStart);
+                    if (!edge) {
+                        return;
+                    }
+                    var target = dir === 'next' ? edge.nextStart : edge.prevStart;
+                    if (target === null || typeof target === 'undefined' || domPages.has(target)) {
+                        return;
+                    }
+                    loading = true;
+                    var oldHeight = pane.scrollHeight;
+                    var oldTop = pane.scrollTop;
+                    fetchPages({
+                        start: target,
+                        span: 0,
+                        end: dir === 'prev' ? edge.start : null
+                    }, function(error, data) {
+                        loading = false;
+                        if (error) {
+                            return;
+                        }
+                        var newPages = data.pages || [];
+                        if (dir === 'next') {
+                            newPages.forEach(function(page) {
+                                addPage(page, 'append');
+                            });
+                        } else {
+                            newPages.slice().reverse().forEach(function(page) {
+                                addPage(page, 'prepend');
+                            });
+                            var delta = pane.scrollHeight - oldHeight;
+                            pane.scrollTop = oldTop + delta;
+                        }
+                        size = parseInt(data.size, 10) || size;
+                        mtime = parseInt(data.mtime, 10) || mtime;
+                        pane.setAttribute('data-size', size);
+                        pane.setAttribute('data-mtime', mtime);
+                        pruneDom();
+                        updateUi();
+                        saveCache();
+                    });
+                }
+
+                Object.keys(nav).forEach(function(name) {
+                    nav[name].addEventListener('click', function(event) {
+                        if (this.classList.contains('disabled')) {
+                            event.preventDefault();
+                            return;
+                        }
+                        event.preventDefault();
+                        navigate(name);
+                    });
+                });
+
+                pane.addEventListener('scroll', function() {
+                    if (suppressScroll) {
+                        return;
+                    }
+                    var start = currentPageAtViewportTop();
+                    if (start !== null && start !== currentStart) {
+                        currentStart = start;
+                        updateUi();
+                    }
+                    if (autoExtend) {
+                        var height = pane.clientHeight;
+                        if (pane.scrollTop + height >= pane.scrollHeight - height * 0.25) {
+                            extend('next');
+                        }
+                        if (pane.scrollTop <= height * 0.25) {
+                            extend('prev');
+                        }
+                    }
+                    scheduleSave();
+                });
+
+                window.addEventListener('resize', function() {
+                    window.clearTimeout(resizeTimer);
+                    resizeTimer = window.setTimeout(function() {
+                        var measured = measure();
+                        if (measured.lines === lines) {
+                            return;
+                        }
+                        lines = measured.lines;
+                        requestCurrent(span, 'page');
+                    }, 150);
+                });
+
+                if (bufferInput) {
+                    bufferInput.addEventListener('change', function() {
+                        var value = parseInt(this.value, 10);
+                        if (!value || value < 1) {
+                            value = 1;
+                        }
+                        if (value > 11) {
+                            value = 11;
+                        }
+                        if (value % 2 === 0) {
+                            value++;
+                        }
+                        this.value = value;
+                        totalBuffer = value;
+                        span = Math.floor((totalBuffer - 1) / 2);
+                        try {
+                            window.localStorage.setItem('fmTextBufferPages', String(value));
+                        } catch (e) {}
+                        requestCurrent(span, 'page');
+                    });
+                }
+
+                function init() {
+                    var measured = measure();
+                    var saved = 0;
+                    try {
+                        saved = parseInt(window.localStorage.getItem('fmTextBufferPages'), 10);
+                    } catch (e) {}
+                    if (saved && saved >= 1 && saved <= 11) {
+                        if (saved % 2 === 0) {
+                            saved++;
+                        }
+                        totalBuffer = saved;
+                        span = Math.floor((totalBuffer - 1) / 2);
+                    }
+                if (autoScrollInput) {
+                    autoScrollInput.addEventListener('change', function() {
+                        followEnabled = this.checked;
+                        try {
+                            window.localStorage.setItem('fmTextAutoScroll', followEnabled ? '1' : '0');
+                        } catch (e) {}
+                        if (followEnabled) {
+                            startFollow();
+                        } else {
+                            window.clearTimeout(followTimer);
+                            followTimer = null;
+                        }
+                    });
+                }
+
+                if (bufferInput) {
+                        bufferInput.value = totalBuffer;
+                    }
+                    var bufferChanged = totalBuffer !== serverBuffer;
+
+                    indexDom();
+                    domPages.forEach(function(el) {
+                        highlightPage(el);
+                    });
+
+                    var restored = false;
+                    if (!bufferChanged && cacheId && lines === serverLines && measured.lines === lines) {
+                        try {
+                            var raw = window.sessionStorage.getItem(cacheKey());
+                            if (raw) {
+                                var data = JSON.parse(raw);
+                                if (data && data.v === 1 && data.size === size && data.mtime === mtime &&
+                                    data.lines === lines && data.pages && data.pages.length) {
+                                    pages.clear();
+                                    domPages.clear();
+                                    pre.innerHTML = '';
+                                    data.pages.forEach(function(page) {
+                                        pages.set(page.start, page);
+                                        var el = makePage(page);
+                                        pre.appendChild(el);
+                                        domPages.set(page.start, el);
+                                        highlightPage(el);
+                                    });
+                                    if (typeof data.currentStart === 'number') {
+                                        currentStart = data.currentStart;
+                                    }
+                                    restored = true;
+                                }
+                            }
+                        } catch (e) {}
+                    }
+
+                    if (measured.lines !== lines) {
+                        lines = measured.lines;
+                        requestInitial(span);
+                    } else if (bufferChanged) {
+                        requestInitial(span);
+                    } else if (restored) {
+                        setScroll(initialScroll === 'bottom' ? 'bottom' : 'page');
+                        updateUi();
+                    } else {
+                        setScroll(initialScroll);
+                        updateUi();
+                    }
+
+                    var savedAutoScroll = false;
+                    try {
+                        savedAutoScroll = window.localStorage.getItem('fmTextAutoScroll') === '1';
+                    } catch (e) {}
+                    if (savedAutoScroll && autoScrollInput) {
+                        autoScrollInput.checked = true;
+                        followEnabled = true;
+                        startFollow();
+                    }
+                }
+
+                init();
+            })();
+        </script>
+
         <?php if (isset($_GET['edit']) && isset($_GET['env']) && FM_EDIT_FILE && !FM_READONLY):
             $ext = pathinfo($_GET["edit"], PATHINFO_EXTENSION);
             $ext =  $ext == "js" ? "javascript" :  $ext;
@@ -5693,6 +7188,55 @@ function fm_show_header_login()
         $tr['en']['File or folder with this path already exists']   = 'File or folder with this path already exists';
         $tr['en']['Are you sure want to rename?']                   = 'Are you sure want to rename?';
         $tr['en']['Are you sure want to']                           = 'Are you sure want to';
+        $tr['en']['Audio']                                          = 'Audio';
+        $tr['en']['Bottom']                                         = 'Bottom';
+        $tr['en']['Buffer']                                         = 'Buffer';
+        $tr['en']['Cannot open file! Aborting download']            = 'Cannot open file! Aborting download';
+        $tr['en']['Charset']                                        = 'Charset';
+        $tr['en']['Compression']                                    = 'Compression';
+        $tr['en']['Empty file']                                     = 'Empty file';
+        $tr['en']['Enter here...']                                  = 'Enter here...';
+        $tr['en']['Enter new file name']                            = 'Enter new file name';
+        $tr['en']['Error loading page']                             = 'Error loading page';
+        $tr['en']['Error while fetching file']                      = 'Error while fetching file';
+        $tr['en']['Execute']                                        = 'Execute';
+        $tr['en']['Files in archive']                               = 'Files in archive';
+        $tr['en']['Fullscreen']                                     = 'Fullscreen';
+        $tr['en']['Group']                                          = 'Group';
+        $tr['en']['Image']                                          = 'Image';
+        $tr['en']['Image size']                                     = 'Image size';
+        $tr['en']['Invalid Token.']                                 = 'Invalid Token.';
+        $tr['en']['Lines %s-%s']                                    = 'Lines %s-%s';
+        $tr['en']['Next']                                           = 'Next';
+        $tr['en']['Okay']                                           = 'Okay';
+        $tr['en']['Other']                                          = 'Other';
+        $tr['en']['Prev']                                           = 'Prev';
+        $tr['en']['Read']                                           = 'Read';
+        $tr['en']['Redo']                                           = 'Redo';
+        $tr['en']['Select Document Type']                           = 'Select Document Type';
+        $tr['en']['Select Font Size']                               = 'Select Font Size';
+        $tr['en']['Select Mode']                                    = 'Select Mode';
+        $tr['en']['Select Theme']                                   = 'Select Theme';
+        $tr['en']['Size in archive']                                = 'Size in archive';
+        $tr['en']['Sometimes the save action may not work on the first try, so please attempt it again'] = 'Sometimes the save action may not work on the first try, so please attempt it again';
+        $tr['en']['Tar']                                            = 'Tar';
+        $tr['en']['Text pages']                                     = 'Text pages';
+        $tr['en']['Auto-scroll']                                    = 'Auto-scroll';
+        $tr['en']['Theme']                                          = 'Theme';
+        $tr['en']['Top']                                            = 'Top';
+        $tr['en']['Total size']                                     = 'Total size';
+        $tr['en']['Undo']                                           = 'Undo';
+        $tr['en']['Upload from URL']                                = 'Upload from URL';
+        $tr['en']['Video']                                          = 'Video';
+        $tr['en']['Word Wrap']                                      = 'Word Wrap';
+        $tr['en']['Write']                                          = 'Write';
+        $tr['en']['Zero byte file! Aborting download']              = 'Zero byte file! Aborting download';
+        $tr['en']['Zip']                                            = 'Zip';
+        $tr['en']['a files']                                        = 'a files';
+        $tr['en']['dark']                                           = 'dark';
+        $tr['en']['light']                                          = 'light';
+        $tr['en']['not created']                                    = 'not created';
+        $tr['en']['not deleted']                                    = 'not deleted';
 
         $i18n = fm_get_translations($tr);
         $tr = $i18n ? $i18n : $tr;
